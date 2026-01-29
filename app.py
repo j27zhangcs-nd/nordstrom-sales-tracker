@@ -66,49 +66,77 @@ def load_data():
     except Exception:
         # 如果读取失败或为空，返回空表
         return pd.DataFrame()
+    
+# --- 3. 侧边栏：设定今日目标 (新增功能！) ---
+with st.sidebar:
+    st.header("🎯 今日目标")
+    daily_goal = st.number_input("销售额目标 ($)", value=2000, step=100)
 
-# --- 3. 输入表单 (UI 保持不变) ---
+# --- 4. 主界面：输入表单 (手机优化版) ---
+
+# 1. 顶部：进度条激励
+df = load_data()
+if not df.empty:
+    # 处理数据格式，确保 Amount 是数字
+    if 'Amount' in df.columns:
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
+    total_sales = df['Amount'].sum()
+else:
+    total_sales = 0
+
+# 计算进度
+progress = min(total_sales / daily_goal, 1.0) # 最大 100%
+st.metric("今日业绩", f"${total_sales:,.0f}", f"目标: ${daily_goal}")
+st.progress(progress)
+
+st.divider()
+
+# 2. 极速录入表单
 with st.form("entry_form", clear_on_submit=True):
-    # --- 顾客画像 ---
-    st.subheader("1. 顾客画像 (Profile)")
+    st.caption("🚀 快速录入")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        age = st.selectbox("年龄段", ["20s", "30s", "40s", "50+", "Teens"], index=1)
-        gender = st.radio("性别", ["女性", "男性", "组合"], horizontal=True)
-    with col2:
-        race = st.selectbox("种族估测", ["Asian", "White", "Black", "Latino", "Other"], index=0)
+    # 第一行：谁来了？(使用列布局节省空间)
+    c1, c2, c3 = st.columns([1.5, 1, 1])
+    with c1:
+        age = st.selectbox("年龄", ["20s", "30s", "40s", "50+", "Teens"], index=1)
+    with c2:
+        gender = st.selectbox("性别", ["女", "男", "组合"], index=0)
+    with c3:
+        race = st.selectbox("种族", ["Asian", "White", "Black", "Latino", "Other"], index=0)
+
+    # 第二行：意图
+    intent = st.radio("进店意图", 
+                      ["闲逛 (Browsing)", "明确目标 (Specific)", "取货/礼物 (Pickup/Gift)"], 
+                      horizontal=True)
+
+    st.write("") # 空行间距
+    
+    # 第三行：结果 (核心交互！)
+    # ⚠️ 这里的 radio 如果选中"买了"，我们希望能弹窗输入金额
+    # 但在 Form 里无法做动态交互，所以我们用简单的逻辑：
+    outcome = st.radio("最终结果", ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], horizontal=True)
 
     st.divider()
-
-    # --- 意图与结果 ---
-    st.subheader("2. 交互详情 (Interaction)")
     
-    intent = st.radio(
-        "进店意图 (Intent)",
-        ["Browsing (闲逛)", "Specific (明确目标)", "Gift (买礼物)", "Intercepted (拦截)"],
-    )
+    # 第四行：根据情况填空
+    # 为了手机不拥挤，我们将金额和原因并列，提示用户只填一项
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        amount = st.number_input("💰 金额 (成交填这里)", min_value=0.0, step=10.0)
+    with col_input2:
+        no_buy_reason = st.selectbox("🤔 原因 (没买选这里)", 
+                                     ["N/A", "Just looking", "Price", "Competitor", "Out of Stock"])
 
-    st.write("") 
-    outcome = st.radio("最终结果 (Outcome)", ["Bought (买了)", "No Buy (没买)"], horizontal=True)
-
-    st.divider()
-    
-    # --- 补充信息 ---
-    st.info("👇 选填一项 (根据结果)")
-    amount = st.number_input("金额 (如果买了)", min_value=0.0, step=10.0)
-    no_buy_reason = st.selectbox("原因 (如果没买)", 
-                                 ["N/A", "Just looking", "Price", "Competitor", "Out of Stock"])
-
-    # 提交按钮
-    submitted = st.form_submit_button("✅ 提交记录", use_container_width=True)
+    # 提交大按钮
+    submitted = st.form_submit_button("🔥 提交记录", use_container_width=True)
 
     if submitted:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        final_amount = amount if outcome == "Bought (买了)" else 0
-        final_reason = no_buy_reason if outcome == "No Buy (没买)" else ""
+        
+        # 智能逻辑：如果是“没买”，强制把金额设为 0
+        final_amount = amount if "Bought" in outcome else 0
+        final_reason = no_buy_reason if "No Buy" in outcome else ""
 
-        # 构造数据字典
         new_entry = {
             "Time": current_time,
             "Age": age,
@@ -120,15 +148,22 @@ with st.form("entry_form", clear_on_submit=True):
             "Reason": final_reason
         }
         
-        # 调用新的保存函数
         save_data(new_entry)
+        st.toast(f"已保存！目前总业绩: ${total_sales + final_amount:,.0f}")
         
-        st.toast("已保存到云端！加油开下一单！")
-        
-        # ⏳ 延迟一点点再刷新，让 Toast 提示能显示出来
+        # 延迟刷新，让进度条动起来
         import time
         time.sleep(1)
         st.rerun()
+
+# --- 5. 历史记录 (折叠起来，不占地) ---
+st.write("")
+with st.expander("📊 点击查看今日详细列表"):
+    if not df.empty:
+        # 把最新的显示在最前面
+        st.dataframe(df.iloc[::-1], use_container_width=True)
+    else:
+        st.info("暂无数据")
 
 # --- 4. 实时数据反馈 ---
 st.divider()

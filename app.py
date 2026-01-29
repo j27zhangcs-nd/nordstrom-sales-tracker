@@ -2,37 +2,72 @@ import streamlit as st
 import pandas as pd
 import os
 import json
-import time  # 提到最前面，方便全局使用
+import time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="柜台销售记录", page_icon="💄")
+st.set_page_config(page_title="柜台销售记录", page_icon="💄", layout="centered")
 
-st.title("💄 柜台销售记录器")
-st.caption("Nordstrom 柜台 - 快速交互记录 (云端同步版)")
+# 🔥🔥🔥 魔法 UI 样式区 (Magic CSS) 🔥🔥🔥
+def add_custom_css():
+    st.markdown("""
+    <style>
+    /* 1. 隐藏单选按钮原本的小圈圈 */
+    div[role="radiogroup"] label > div:first-child {
+        display: none !important;
+    }
+    
+    /* 2. 把选项变成大大的方块按钮 */
+    div[role="radiogroup"] label {
+        background-color: #f0f2f6;
+        padding: 15px 20px;
+        border-radius: 10px;
+        border: 2px solid transparent;
+        margin-right: 10px;
+        cursor: pointer;
+        transition: all 0.2s;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-weight: bold;
+    }
+
+    /* 3. 鼠标悬停或者是选中时的效果 */
+    div[role="radiogroup"] label:hover {
+        background-color: #ffebeb;
+        color: #ff4b4b;
+        border: 2px solid #ff4b4b;
+    }
+    
+    /* 4. Tab 标签页样式 */
+    button[data-baseweb="tab"] {
+        font-size: 18px !important;
+        font-weight: bold !important;
+        padding: 10px 20px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+add_custom_css()
 
 # --- 2. Google Sheets 连接配置 ---
 @st.cache_resource
 def get_google_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # 🕵️‍♀️ 双模侦测：判断是在本地还是云端
     if os.path.exists("secrets.json"):
         creds = ServiceAccountCredentials.from_json_keyfile_name("secrets.json", scope)
     else:
         creds_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-
     client = gspread.authorize(creds)
     sheet = client.open("Nordstrom Sales Data").sheet1 
     return sheet
 
 # --- 数据处理函数 ---
-
 def save_data(data):
-    """追加写入"""
     sheet = get_google_sheet()
     row = [
         data["Time"], data["Age"], data["Gender"], data["Race"],
@@ -41,16 +76,12 @@ def save_data(data):
     sheet.append_row(row)
 
 def delete_last_entry():
-    """💥 新增功能：撤销（删除）最后一行"""
     try:
         sheet = get_google_sheet()
-        # 获取所有数据（为了知道有多少行）
         all_values = sheet.get_all_values()
-        
-        # 确保不仅仅只有表头（长度大于1才删）
         if len(all_values) > 1:
-            last_item = all_values[-1] # 记录一下删了啥
-            sheet.delete_rows(len(all_values)) # 删除最后一行
+            last_item = all_values[-1]
+            sheet.delete_rows(len(all_values))
             return True, last_item
         else:
             return False, None
@@ -58,7 +89,6 @@ def delete_last_entry():
         return False, str(e)
 
 def load_data():
-    """读取数据"""
     try:
         sheet = get_google_sheet()
         records = sheet.get_all_records()
@@ -66,135 +96,132 @@ def load_data():
     except Exception:
         return pd.DataFrame()
 
-# --- 3. 侧边栏：设置与操作 (保持不变) ---
+# --- 3. 侧边栏 ---
 with st.sidebar:
-    st.header("⚙️ 设置与操作")
-    
-    # 1. 目标设置
+    st.header("⚙️ 目标设置")
     daily_goal = st.number_input("🎯 今日目标 ($)", value=2000, step=100)
-    
-    st.divider()
-    
-    # 2. 撤销按钮
-    st.warning("⚠️ 操作区")
-    if st.button("↩️ 撤销上一单 (Undo)", type="primary"):
-        with st.spinner("正在撤销..."): # 加个转圈圈动画
-            success, info = delete_last_entry()
-            
-        if success:
-            st.toast(f"✅ 已撤销上一笔: {info[5]} - ${info[6]}") # 提示删掉了什么
-            time.sleep(1)
-            st.rerun() # 强制刷新页面
-        else:
-            if info:
-                st.error(f"撤销失败: {info}")
-            else:
-                st.info("表格是空的，没法撤销啦！")
+    st.info("💡 提示：撤销和历史记录请去「📊 战绩复盘」标签页")
 
-# --- 4. 主界面：仪表盘 & 表单 ---
+# --- 4. 主逻辑 ---
 
-# 加载数据 (只加载一次，后面复用)
+st.title("💄 Lancôme Sales Tracker")
+
+# 准备数据
 df = load_data()
 if not df.empty:
     if 'Amount' in df.columns:
         df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
     total_sales = df['Amount'].sum()
     count = len(df)
-    # 计算转化率
+    # 获取所有“买了”的订单
+    bought_df = df[df['Outcome'].str.contains("Bought", na=False)]
+    
     if count > 0:
-        conversion = (len(df[df['Outcome'].str.contains("Bought", na=False)]) / count) * 100
+        conversion = (len(bought_df) / count) * 100
     else:
         conversion = 0
 else:
-    total_sales = 0
-    count = 0
-    conversion = 0
+    # ⚠️ 之前就是这里漏了定义 bought_df，现在补上了！
+    total_sales = 0; count = 0; conversion = 0
+    bought_df = pd.DataFrame() 
 
-# 1. 顶部：关键指标
-c1, c2, c3 = st.columns(3)
-c1.metric("今日业绩", f"${total_sales:,.0f}", f"目标: ${daily_goal}")
-c2.metric("总客流", f"{count} 人")
-c3.metric("转化率", f"{conversion:.0f}%")
+# Tab 分页
+tab1, tab2 = st.tabs(["📝 快速录入", "📊 战绩复盘"])
 
-# 进度条
-progress = min(total_sales / daily_goal, 1.0)
-st.progress(progress)
-
-st.divider()
-
-# --- 🔥 这里开始是本次优化的核心改动 🔥 ---
-
-# 1. 这一单的结果是？(移出表单，变成全局开关)
-# 这样点它的时候，下面的表单会立刻刷新
-st.subheader("1. 这一单的结果是？")
-outcome_mode = st.radio(
-    "Outcome Mode", 
-    ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], 
-    horizontal=True, 
-    label_visibility="collapsed" # 隐藏标题，更简洁
-)
-
-# 2. 极速录入表单
-with st.form("entry_form", clear_on_submit=True):
-    st.caption("2. 快速补充细节")
+# ====================
+# TAB 1: 战斗模式
+# ====================
+with tab1:
+    st.metric("今日业绩", f"${total_sales:,.0f}", f"目标: ${daily_goal} ({(total_sales/daily_goal)*100:.0f}%)")
+    st.progress(min(total_sales / daily_goal, 1.0))
     
-    # 第一行：顾客画像
-    c1, c2, c3 = st.columns([1.5, 1, 1])
-    with c1:
-        age = st.selectbox("年龄", ["20s", "30s", "40s", "50+", "Teens"], index=1)
-    with c2:
-        gender = st.selectbox("性别", ["女", "男", "组合"], index=0)
-    with c3:
-        race = st.selectbox("种族", ["Asian", "White", "Black", "Latino", "Other"], index=0)
+    st.divider()
 
-    # 第二行：意图
-    intent = st.radio("进店意图", 
-                      ["闲逛 (Browsing)", "明确目标 (Specific)", "取货/礼物 (Pickup/Gift)"], 
-                      horizontal=True)
+    st.subheader("这一单的结果是？")
+    outcome_mode = st.radio(
+        "Outcome Mode", 
+        ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], 
+        horizontal=True, 
+        label_visibility="collapsed"
+    )
 
+    with st.form("entry_form", clear_on_submit=True):
+        st.caption("顾客画像 (点点点就行)")
+        
+        # 行 1: 年龄 (大按钮)
+        age = st.radio("年龄", ["Teens", "20s", "30s", "40s", "50+"], horizontal=True)
+        
+        st.write("") 
+
+        # 行 2: 性别 & 种族
+        c1, c2 = st.columns(2)
+        with c1: 
+            gender = st.selectbox("性别", ["女", "男", "组合"])
+        with c2: 
+            race = st.selectbox("种族", ["Asian", "White", "Black", "Latino", "Other"])
+
+        st.divider()
+        st.caption("进店意图")
+        intent = st.radio("意图", ["闲逛", "明确目标", "取货/礼物"], horizontal=True, label_visibility="collapsed")
+        
+        st.divider()
+
+        # 动态逻辑
+        if "Bought" in outcome_mode:
+            st.success("✨ 开单大吉！")
+            amount = st.number_input("成交金额 ($)", min_value=0.0, step=10.0)
+            reason = ""
+        else:
+            st.warning("💪 下一位会更好！")
+            amount = 0
+            reason = st.selectbox("没买原因", ["Just looking", "Price", "Competitor", "Out of Stock", "Other"])
+
+        st.write("")
+        if st.form_submit_button("🚀 提交记录", use_container_width=True):
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_entry = {
+                "Time": current_time, "Age": age, "Gender": gender, "Race": race,
+                "Intent": intent, "Outcome": outcome_mode, "Amount": amount, "Reason": reason
+            }
+            save_data(new_entry)
+            st.toast("✅ 已保存！")
+            time.sleep(0.5)
+            st.rerun()
+
+# ====================
+# TAB 2: 复盘模式
+# ====================
+with tab2:
+    st.header("📊 今日数据看板")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("总客流", f"{count}")
+    m2.metric("转化率", f"{conversion:.0f}%")
+    
+    # 这里的计算现在安全了，因为 bought_df 肯定存在
+    avg_order = (total_sales / len(bought_df)) if len(bought_df) > 0 else 0
+    m3.metric("平均客单", f"${avg_order:.0f}")
+    
+    st.divider()
+
+    if not df.empty:
+        st.subheader("📈 销售趋势")
+        chart_data = df.groupby("Intent")["Amount"].sum()
+        st.bar_chart(chart_data)
+    
     st.divider()
     
-    # 第三行：根据“结果开关”条件显示 (Conditional Logic)
-    
-    if "Bought" in outcome_mode:
-        # 如果是买了 -> 只显示金额
-        st.info("💰 开单啦！")
-        amount = st.number_input("输入金额 ($)", min_value=0.0, step=10.0)
-        reason = "" # 自动把原因设为空
-    else:
-        # 如果没买 -> 只显示原因
-        st.warning("🤔 没买...")
-        amount = 0 # 自动把金额设为 0
-        reason = st.selectbox("选择原因", ["Just looking", "Price", "Competitor", "Out of Stock", "Other"])
-
-    # 提交按钮
-    submitted = st.form_submit_button("🔥 提交记录", use_container_width=True)
-
-    if submitted:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 构造数据 (直接使用上面逻辑里定义好的 amount 和 reason)
-        new_entry = {
-            "Time": current_time,
-            "Age": age,
-            "Gender": gender,
-            "Race": race,
-            "Intent": intent,
-            "Outcome": outcome_mode, # 使用外面的开关状态
-            "Amount": amount,
-            "Reason": reason
-        }
-        
-        save_data(new_entry)
-        st.toast(f"已保存！")
-        time.sleep(0.5)
-        st.rerun()
-
-# --- 5. 历史记录 (保持不变) ---
-st.write("")
-with st.expander("📊 点击查看今日详细列表"):
+    st.subheader("📜 修正记录")
+    col_undo, col_space = st.columns([1, 2])
+    with col_undo:
+        if st.button("↩️ 撤销上一单", type="primary"):
+            with st.spinner("撤销中..."):
+                success, info = delete_last_entry()
+            if success:
+                st.toast(f"✅ 已删除: ${info[6]}")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("无法撤销")
+                
     if not df.empty:
-        # iloc[::-1] 让最新的显示在第一行
         st.dataframe(df.iloc[::-1], use_container_width=True)
-    else:
-        st.info("暂无数据")

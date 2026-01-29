@@ -66,7 +66,7 @@ def load_data():
     except Exception:
         return pd.DataFrame()
 
-# --- 3. 侧边栏：设置与操作 (已更新) ---
+# --- 3. 侧边栏：设置与操作 (保持不变) ---
 with st.sidebar:
     st.header("⚙️ 设置与操作")
     
@@ -75,7 +75,7 @@ with st.sidebar:
     
     st.divider()
     
-    # 2. 撤销按钮 (这里是新增的核心！)
+    # 2. 撤销按钮
     st.warning("⚠️ 操作区")
     if st.button("↩️ 撤销上一单 (Undo)", type="primary"):
         with st.spinner("正在撤销..."): # 加个转圈圈动画
@@ -110,7 +110,7 @@ else:
     count = 0
     conversion = 0
 
-# 1. 顶部：关键指标 (合并了进度条和战报，更整洁)
+# 1. 顶部：关键指标
 c1, c2, c3 = st.columns(3)
 c1.metric("今日业绩", f"${total_sales:,.0f}", f"目标: ${daily_goal}")
 c2.metric("总客流", f"{count} 人")
@@ -122,11 +122,23 @@ st.progress(progress)
 
 st.divider()
 
+# --- 🔥 这里开始是本次优化的核心改动 🔥 ---
+
+# 1. 这一单的结果是？(移出表单，变成全局开关)
+# 这样点它的时候，下面的表单会立刻刷新
+st.subheader("1. 这一单的结果是？")
+outcome_mode = st.radio(
+    "Outcome Mode", 
+    ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], 
+    horizontal=True, 
+    label_visibility="collapsed" # 隐藏标题，更简洁
+)
+
 # 2. 极速录入表单
 with st.form("entry_form", clear_on_submit=True):
-    st.caption("🚀 快速录入")
+    st.caption("2. 快速补充细节")
     
-    # 第一行
+    # 第一行：顾客画像
     c1, c2, c3 = st.columns([1.5, 1, 1])
     with c1:
         age = st.selectbox("年龄", ["20s", "30s", "40s", "50+", "Teens"], index=1)
@@ -135,51 +147,50 @@ with st.form("entry_form", clear_on_submit=True):
     with c3:
         race = st.selectbox("种族", ["Asian", "White", "Black", "Latino", "Other"], index=0)
 
-    # 第二行
+    # 第二行：意图
     intent = st.radio("进店意图", 
                       ["闲逛 (Browsing)", "明确目标 (Specific)", "取货/礼物 (Pickup/Gift)"], 
                       horizontal=True)
 
-    st.write("") 
-    
-    # 第三行
-    outcome = st.radio("最终结果", ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], horizontal=True)
-
     st.divider()
     
-    # 第四行
-    col_input1, col_input2 = st.columns(2)
-    with col_input1:
-        amount = st.number_input("💰 金额 (成交填这里)", min_value=0.0, step=10.0)
-    with col_input2:
-        no_buy_reason = st.selectbox("🤔 原因 (没买选这里)", 
-                                     ["N/A", "Just looking", "Price", "Competitor", "Out of Stock"])
+    # 第三行：根据“结果开关”条件显示 (Conditional Logic)
+    
+    if "Bought" in outcome_mode:
+        # 如果是买了 -> 只显示金额
+        st.info("💰 开单啦！")
+        amount = st.number_input("输入金额 ($)", min_value=0.0, step=10.0)
+        reason = "" # 自动把原因设为空
+    else:
+        # 如果没买 -> 只显示原因
+        st.warning("🤔 没买...")
+        amount = 0 # 自动把金额设为 0
+        reason = st.selectbox("选择原因", ["Just looking", "Price", "Competitor", "Out of Stock", "Other"])
 
     # 提交按钮
     submitted = st.form_submit_button("🔥 提交记录", use_container_width=True)
 
     if submitted:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        final_amount = amount if "Bought" in outcome else 0
-        final_reason = no_buy_reason if "No Buy" in outcome else ""
-
+        
+        # 构造数据 (直接使用上面逻辑里定义好的 amount 和 reason)
         new_entry = {
             "Time": current_time,
             "Age": age,
             "Gender": gender,
             "Race": race,
             "Intent": intent,
-            "Outcome": outcome,
-            "Amount": final_amount,
-            "Reason": final_reason
+            "Outcome": outcome_mode, # 使用外面的开关状态
+            "Amount": amount,
+            "Reason": reason
         }
         
         save_data(new_entry)
-        st.toast(f"已保存！目前总业绩: ${total_sales + final_amount:,.0f}")
-        time.sleep(1)
+        st.toast(f"已保存！")
+        time.sleep(0.5)
         st.rerun()
 
-# --- 5. 历史记录 ---
+# --- 5. 历史记录 (保持不变) ---
 st.write("")
 with st.expander("📊 点击查看今日详细列表"):
     if not df.empty:

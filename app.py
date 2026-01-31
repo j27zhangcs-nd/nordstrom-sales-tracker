@@ -1,33 +1,24 @@
 import streamlit as st
 import pandas as pd
 import os
-import json
 import time
 import gspread
+import pytz
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="柜台销售记录", page_icon="💄", layout="centered")
 
-# 🔥🔥🔥 魔法 UI 样式区 (V9: 全模块化 + 精准列数控制) 🔥🔥🔥
+# 🔥🔥🔥 魔法 UI 样式区 (保持不变) 🔥🔥🔥
 def add_custom_css():
     st.markdown("""
     <style>
-    /* 全局字体 */
-    html, body, [class*="css"] {
-        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    }
-
-    /* 1. 隐藏单选按钮原本的小圆圈 */
-    div[role="radiogroup"] label > div:first-child {
-        display: none !important;
-    }
-
-    /* 2. 按钮基础样式 (通用卡片) */
+    html, body, [class*="css"] { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    div[role="radiogroup"] label > div:first-child { display: none !important; }
     div[role="radiogroup"] label {
         background-color: #f8f9fa;
-        padding: 10px 5px;        /* 减少内边距，为了让一排能塞下5个 */
+        padding: 10px 5px;
         border-radius: 6px;
         border: 1px solid #eee;
         margin: 0 !important;
@@ -39,46 +30,16 @@ def add_custom_css():
         box-shadow: 0 1px 2px rgba(0,0,0,0.03);
         color: #666;
         font-weight: 500;
-        font-size: 14px;          /* 字体稍微改小一点点，防止挤 */
+        font-size: 14px;
         height: 100%;
         width: 100%;
     }
-
-    /* 3. 基础网格 (默认自动适应) */
-    div[role="radiogroup"] {
-        display: grid !important;
-        gap: 8px !important;      /* 间距稍微调小，更紧凑 */
-    }
-
-    /* 🔥 4. 精准控制各模块列数 (CSS 魔法) 🔥 */
-    
-    /* 结果 (Outcome): 强制 2 列 */
-    div[role="radiogroup"][aria-label="Outcome Mode"] {
-        grid-template-columns: 1fr 1fr !important;
-    }
-
-    /* 年龄 (Age): 强制 5 列 (一排！) */
-    div[role="radiogroup"][aria-label="年龄"] {
-        grid-template-columns: repeat(5, 1fr) !important;
-    }
-
-    /* 性别 (Gender): 强制 3 列 (一排！) */
-    div[role="radiogroup"][aria-label="性别"] {
-        grid-template-columns: repeat(3, 1fr) !important;
-    }
-
-    /* 种族 (Race): 强制 5 列 (一排！) */
-    /* 如果手机屏幕太窄，这行可能会挤，但为了“平行一排”的效果，我们强制设为5 */
-    div[role="radiogroup"][aria-label="种族"] {
-        grid-template-columns: repeat(5, 1fr) !important;
-    }
-    
-    /* 意图 (Intent): 强制 3 列 */
-    div[role="radiogroup"][aria-label="进店意图"] {
-        grid-template-columns: repeat(3, 1fr) !important;
-    }
-
-    /* 5. 选中状态：晨曦粉 */
+    div[role="radiogroup"] { display: grid !important; gap: 8px !important; }
+    div[role="radiogroup"][aria-label="Outcome Mode"] { grid-template-columns: 1fr 1fr !important; }
+    div[role="radiogroup"][aria-label="年龄"] { grid-template-columns: repeat(5, 1fr) !important; }
+    div[role="radiogroup"][aria-label="性别"] { grid-template-columns: repeat(3, 1fr) !important; }
+    div[role="radiogroup"][aria-label="种族"] { grid-template-columns: repeat(5, 1fr) !important; }
+    div[role="radiogroup"][aria-label="进店意图"] { grid-template-columns: repeat(3, 1fr) !important; }
     div[role="radiogroup"] label:has(input:checked) {
         background-color: #FFF0F5 !important;
         color: #9F1239 !important;
@@ -86,23 +47,9 @@ def add_custom_css():
         box-shadow: 0 2px 5px rgba(253, 164, 175, 0.4);
         font-weight: bold;
     }
-    
-    div[role="radiogroup"] label:hover {
-        border-color: #FECDD3;
-        color: #9F1239;
-    }
-
-    /* 6. 特殊调整 */
-    /* 让“结果”开关更高大上一点 */
-    div[aria-label="Outcome Mode"] label {
-        padding: 15px 10px !important;
-        font-size: 16px !important;
-    }
-    
-    /* 微调数字输入框的位置 */
-    .stNumberInput, .stSelectbox {
-        margin-top: -5px; 
-    }
+    div[role="radiogroup"] label:hover { border-color: #FECDD3; color: #9F1239; }
+    div[aria-label="Outcome Mode"] label { padding: 15px 10px !important; font-size: 16px !important; }
+    .stNumberInput, .stSelectbox { margin-top: -5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -121,6 +68,12 @@ def get_google_sheet():
     sheet = client.open("Nordstrom Sales Data").sheet1 
     return sheet
 
+# --- 🕒 核心功能：获取西雅图时间 ---
+def get_seattle_time():
+    utc_now = datetime.now(pytz.utc)
+    seattle_tz = pytz.timezone('America/Los_Angeles')
+    return utc_now.astimezone(seattle_tz)
+
 # --- 数据处理函数 ---
 def save_data(data):
     sheet = get_google_sheet()
@@ -135,13 +88,12 @@ def delete_last_entry():
         sheet = get_google_sheet()
         all_values = sheet.get_all_values()
         if len(all_values) > 1:
-            last_item = all_values[-1]
             sheet.delete_rows(len(all_values))
-            return True, last_item
+            return True
         else:
-            return False, None
+            return False
     except Exception as e:
-        return False, str(e)
+        return False
 
 def load_data():
     try:
@@ -155,98 +107,76 @@ def load_data():
 with st.sidebar:
     st.header("⚙️ 目标设置")
     daily_goal = st.number_input("🎯 今日目标 ($)", value=2000, step=100)
-    st.info("💡 提示：撤销和历史记录请去「📊 战绩复盘」标签页")
+    
+    seattle_now = get_seattle_time()
+    st.caption(f"📍 西雅图时间: {seattle_now.strftime('%Y-%m-%d %H:%M')}")
+
 
 # --- 4. 主逻辑 ---
-
 st.title("💄 Jing's Nordstrom Beauty Sales Tracker")
 
-# 准备数据
-df = load_data()
-if not df.empty:
-    if 'Amount' in df.columns:
-        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
-    total_sales = df['Amount'].sum()
-    count = len(df)
-    bought_df = df[df['Outcome'].str.contains("Bought", na=False)]
-    if count > 0:
-        conversion = (len(bought_df) / count) * 100
-    else:
-        conversion = 0
-else:
-    total_sales = 0; count = 0; conversion = 0; bought_df = pd.DataFrame()
+# 1️⃣ 加载全部历史数据 (仓库)
+df_all = load_data()
+
+# 2️⃣ 准备“今天”的数据 (用于 Tab 1 录入)
+today_str = seattle_now.strftime("%Y-%m-%d")
+
+# 计算今日总销售额 (为了在 Tab 1 顶部显示)
+total_sales_today = 0
+if not df_all.empty and 'Time' in df_all.columns:
+    df_today_only = df_all[df_all['Time'].astype(str).str.startswith(today_str)].copy()
+    if not df_today_only.empty:
+        df_today_only['Amount'] = pd.to_numeric(df_today_only['Amount'], errors='coerce').fillna(0)
+        total_sales_today = df_today_only['Amount'].sum()
 
 # Tab 分页
-tab1, tab2 = st.tabs(["📝 快速录入", "📊 战绩复盘"])
+tab1, tab2 = st.tabs(["📝 快速录入 (Today)", "🗓️ 历史回看 (History)"])
 
 # ====================
-# TAB 1: 战斗模式
+# TAB 1: 战斗模式 (永远只操作“今天”)
 # ====================
 with tab1:
-    st.metric("今日业绩", f"${total_sales:,.0f}", f"目标: ${daily_goal} ({(total_sales/daily_goal)*100:.0f}%)")
-    st.progress(min(total_sales / daily_goal, 1.0))
+    # 这里的进度条永远显示“今天”的
+    st.metric("今日业绩", f"${total_sales_today:,.0f}", f"目标: ${daily_goal} ({(total_sales_today/daily_goal)*100:.0f}%)")
+    st.progress(min(total_sales_today / daily_goal, 1.0))
     st.divider()
 
-    # 1. 第一步：结果总开关
-    outcome_mode = st.radio(
-        "Outcome Mode", 
-        ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], 
-        horizontal=True, 
-        label_visibility="collapsed"
-    )
+    outcome_mode = st.radio("Outcome Mode", ["✅ 买了 (Bought)", "❌ 没买 (No Buy)"], horizontal=True, label_visibility="collapsed")
 
-    # 2. 第二步：表单区域
     with st.form("entry_form", clear_on_submit=True):
-        
-        # 平行模块布局：左金额，右原因
         c_left, c_right = st.columns(2)
-        
         with c_left:
             if "Bought" in outcome_mode:
                 amount = st.number_input("成交金额 ($)", min_value=0.0, step=10.0)
             else:
                 st.write("") 
                 amount = 0 
-
         with c_right:
             if "No Buy" in outcome_mode:
-                # 原因这里也可以变成模块，但选项有点长，先保留 selectbox
                 reason = st.selectbox("没买原因", ["Just looking", "Price", "Competitor", "Out of Stock", "Other"], label_visibility="collapsed")
             else:
                 st.write("") 
                 reason = "" 
         
         st.divider()
-        
-        # --- 全面模块化画像 (No More Dropdowns!) ---
         st.caption("顾客画像")
-        
-        # 年龄 (CSS 强制 5 列)
         age = st.radio("年龄", ["年轻人", "中年人", "老年人"], horizontal=True)
         st.write("") 
-
-        # 性别 (CSS 强制 3 列) -> 以前是 selectbox，现在改成 radio 变模块
         gender = st.radio("性别", ["女", "男"], horizontal=True)
         st.write("")
-
-        # 种族 (CSS 强制 5 列) -> 以前是 selectbox，现在改成 radio 变模块
-        # 注意：因为这里有 5 个选项，CSS 会强制它们排一行，看起来非常整齐
         race = st.radio("种族", ["白人", "华人", "其他亚裔", "其他美国人", "其他"], horizontal=True)
-
         st.divider()
-
-        # 意图 (CSS 强制 3 列)
         intent = st.radio("进店意图", ["闲逛", "明确目标", "取货/礼物"], horizontal=True)
-
         st.write("")
         st.write("")
         
-        # 提交按钮
         submit_label = "🚀 提交成交！" if "Bought" in outcome_mode else "📝 记录客流"
+        
         if st.form_submit_button(submit_label, use_container_width=True):
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 🔥 强制使用当前西雅图时间写入
+            current_time_str = get_seattle_time().strftime("%Y-%m-%d %H:%M:%S")
             new_entry = {
-                "Time": current_time, "Age": age, "Gender": gender, "Race": race,
+                "Time": current_time_str, "Age": age, "Gender": gender, "Race": race,
                 "Intent": intent, "Outcome": outcome_mode, "Amount": amount, "Reason": reason
             }
             save_data(new_entry)
@@ -255,40 +185,82 @@ with tab1:
             st.rerun()
 
 # ====================
-# TAB 2: 复盘模式 (保持不变)
+# TAB 2: 复盘模式 (穿越时空)
 # ====================
 with tab2:
-    st.header("📊 今日数据看板")
+    st.header("📊 数据看板")
+    
+    # 🔥🔥🔥 核心升级：日期选择器 🔥🔥🔥
+    col_date, col_space = st.columns([2, 1])
+    with col_date:
+        # 默认值是西雅图的今天
+        selected_date = st.date_input("📅 选择你要查看的日期", value=seattle_now.date())
+    
+    selected_date_str = selected_date.strftime("%Y-%m-%d")
+    
+    # 判断用户选的是不是“今天”
+    is_viewing_today = (selected_date_str == today_str)
+
+    # --- 数据筛选逻辑 ---
+    df_view = pd.DataFrame()
+    if not df_all.empty and 'Time' in df_all.columns:
+        # 筛选出选定那天的数据
+        df_view = df_all[df_all['Time'].astype(str).str.startswith(selected_date_str)].copy()
+    
+    # --- 计算指标 ---
+    view_sales = 0
+    view_count = 0
+    view_conversion = 0
+    view_bought_df = pd.DataFrame()
+
+    if not df_view.empty:
+        if 'Amount' in df_view.columns:
+            df_view['Amount'] = pd.to_numeric(df_view['Amount'], errors='coerce').fillna(0)
+        view_sales = df_view['Amount'].sum()
+        view_count = len(df_view)
+        view_bought_df = df_view[df_view['Outcome'].str.contains("Bought", na=False)]
+        if view_count > 0:
+            view_conversion = (len(view_bought_df) / view_count) * 100
+
+    # --- 展示指标 ---
+    st.caption(f"正在查看: {selected_date_str} 的数据")
     m1, m2, m3 = st.columns(3)
-    m1.metric("总客流", f"{count}")
-    m2.metric("转化率", f"{conversion:.0f}%")
-    avg_order = (total_sales / len(bought_df)) if len(bought_df) > 0 else 0
-    m3.metric("平均客单", f"${avg_order:.0f}")
+    m1.metric("总销售额", f"${view_sales:,.0f}")
+    m2.metric("总客流", f"{view_count}")
+    m3.metric("转化率", f"{view_conversion:.0f}%")
     
     st.divider()
 
-    if not df.empty:
+    if not df_view.empty:
         st.subheader("📈 销售趋势")
         try:
-            chart_data = df.groupby("Intent")["Amount"].sum()
+            chart_data = df_view.groupby("Intent")["Amount"].sum()
             st.bar_chart(chart_data)
         except:
-            st.caption("数据不足以生成图表")
-    
-    st.divider()
-    
-    st.subheader("📜 修正记录")
-    col_undo, col_space = st.columns([1, 2])
-    with col_undo:
-        if st.button("↩️ 撤销上一单", type="primary"):
-            with st.spinner("撤销中..."):
-                success, info = delete_last_entry()
-            if success:
-                st.toast(f"✅ 已删除: ${info[6]}")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("无法撤销")
-                
-    if not df.empty:
-        st.dataframe(df.iloc[::-1], use_container_width=True)
+            st.caption("暂无图表数据")
+        
+        st.divider()
+        
+        # 🔥🔥🔥 安全机制 🔥🔥🔥
+        # 只有在查看“今天”的数据时，才允许撤销/删除。
+        # 查看历史数据时，我们隐藏这个按钮，防止你误删了上个月的记录。
+        if is_viewing_today:
+            st.subheader("📜 修正记录")
+            col_undo, col_space2 = st.columns([1, 2])
+            with col_undo:
+                if st.button("↩️ 撤销上一单 (Undo Today)", type="primary"):
+                    with st.spinner("撤销中..."):
+                        success = delete_last_entry()
+                    if success:
+                        st.toast("✅ 已撤销")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("无法撤销")
+        else:
+            st.info("💡 历史数据仅供查看，不可撤销。")
+
+        st.dataframe(df_view.iloc[::-1], use_container_width=True)
+        
+    else:
+        st.info(f"📅 {selected_date_str} 没有销售记录。")

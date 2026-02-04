@@ -10,6 +10,10 @@ from datetime import datetime
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="Nordstrom Sales Tracker", page_icon="💄", layout="centered")
 
+# --- 初始化 Session State (用于全自动重置) ---
+if 'entry_key' not in st.session_state:
+    st.session_state.entry_key = 0
+
 # 🔥🔥🔥 魔法 UI 样式区 (CSS) 🔥🔥🔥
 def add_custom_css():
     st.markdown("""
@@ -21,7 +25,7 @@ def add_custom_css():
     div[role="radiogroup"] label {
         background-color: #f8f9fa;
         padding: 10px 5px;
-        border-radius: 8px; /* 圆角稍微大一点，更有现代感 */
+        border-radius: 8px;
         border: 1px solid #eee;
         margin: 0 !important;
         display: flex;
@@ -36,8 +40,6 @@ def add_custom_css():
         height: 100%;
         width: 100%;
         text-align: center !important;
-        
-        /* 🔥 关键修改：支持换行符，且居中 🔥 */
         white-space: pre-wrap !important; 
         line-height: 1.3 !important; 
     }
@@ -65,8 +67,6 @@ def add_custom_css():
         display: flex;
         justify-content: center;
         align-items: center;
-        
-        /* 🔥 关键修改：Checkbox 也要支持换行和居中 */
         white-space: pre-wrap !important;
         line-height: 1.3 !important;
     }
@@ -103,6 +103,12 @@ def add_custom_css():
     div[role="radiogroup"][aria-label="Reason"] { grid-template-columns: repeat(3, 1fr) !important; }
     div[role="radiogroup"][aria-label="Contact"] { grid-template-columns: repeat(3, 1fr) !important; }
 
+    /* Is Lancôme?: 2列 */
+    div[role="radiogroup"][aria-label="Is Lancôme?"] { grid-template-columns: repeat(2, 1fr) !important; }
+    
+    /* Service Duration: 2列 */
+    div[role="radiogroup"][aria-label="Service Duration"] { grid-template-columns: repeat(2, 1fr) !important; }
+
     .stNumberInput, .stSelectbox { margin-top: -5px; }
     </style>
     """, unsafe_allow_html=True)
@@ -132,18 +138,24 @@ def get_seattle_time():
 def save_data(data):
     sheet = get_google_sheet()
     
-    # 辅助函数：把 None 转换成空字符串，防止报错
     def clean(val):
         return val if val is not None else ""
 
-    # Promo 是列表，需要特殊处理
-    promo_val = data["Promo"]
+    promo_val = data.get("Promo")
     if promo_val is None:
         promo_str = ""
     elif isinstance(promo_val, list):
         promo_str = ", ".join(promo_val)
     else:
         promo_str = str(promo_val)
+        
+    lancome_cats_val = data.get("Lancome_Cats")
+    if lancome_cats_val is None:
+        lancome_cats_str = ""
+    elif isinstance(lancome_cats_val, list):
+        lancome_cats_str = ", ".join(lancome_cats_val)
+    else:
+        lancome_cats_str = str(lancome_cats_val)
 
     row = [
         data["Time"], 
@@ -152,7 +164,10 @@ def save_data(data):
         data["Amount"], clean(data["Reason"]),
         clean(data["Type"]),      
         promo_str,         
-        clean(data["Contact"])    
+        clean(data["Contact"]),
+        clean(data.get("Is_Lancome")),
+        lancome_cats_str,
+        clean(data.get("Duration"))
     ]
     sheet.append_row(row)
 
@@ -187,7 +202,8 @@ with st.sidebar:
 st.title("💄 Nordstrom Beauty Tracker")
 
 # 1️⃣ 加载数据
-df_all = load_data()
+with st.spinner('Loading data...'):
+    df_all = load_data()
 
 # 2️⃣ 今日数据
 today_str = seattle_now.strftime("%Y-%m-%d")
@@ -209,42 +225,69 @@ with tab1:
     st.progress(min(total_sales_today / daily_goal, 1.0))
     st.divider()
 
-    # 🔥 1. 结果选择 (index=None 实现不预选)
-    # 注意文本中间的 \n，这是实现换行的关键
+    # 获取当前的 Key 后缀 (每次提交后会自动 +1，从而重置所有控件)
+    k = str(st.session_state.entry_key)
+
+    # 🔥 1. 外部逻辑层 (Outside Form) --- 点击这里会刷新，为了控制布局 🔥
     outcome_mode = st.radio(
         "Outcome Mode", 
         ["✅ Bought\n买了", "❌ No Buy\n没买"], 
         horizontal=True, 
         label_visibility="collapsed",
-        index=None  # <--- 没有任何默认值
+        index=None,
+        key="outcome_" + k  # 绑定动态Key
     )
     st.write("") 
 
-    # 🔥 2. 只有当用户选择了 Outcome 后，才显示下面的表单
     if outcome_mode is None:
         st.info("👆 Please select an outcome to start recording.\n(请先点击上方“买了”或“没买”开始录入)")
     
     else:
-        # 进入表单区域
-        with st.form("entry_form", clear_on_submit=True):
+        # 🔥 1.5 兰蔻逻辑层 (Outside Form) --- 点击这里也会刷新，为了展开选项 🔥
+        is_lancome = "N/A"
+        if "Bought" in outcome_mode:
+            is_lancome = st.radio("Is Lancôme?", ["Yes\n是", "No\n否"], horizontal=True, index=None, key="is_lancome_" + k)
+        
+        # 🔥 2. 内部数据层 (Inside Form) --- 这里的点击绝对不会刷新！ 🔥
+        # 使用 st.form 将剩下的包裹起来
+        with st.form("entry_form", clear_on_submit=True): # clear_on_submit 配合 key 更稳健
             
-            # --- 金额 / 原因 ---
+            # --- 初始化 ---
+            intent = None
+            promo_selected = []
+            contact = None
+            lancome_cats_selected = []
+
+            # --- A. 金额 / 原因 / 品牌归属 ---
             if "Bought" in outcome_mode:
-                amount = st.number_input("Amount ($)", min_value=0.0, step=10.0, value=None, placeholder="0.00")
-                reason = "" 
+                amount = st.number_input("Amount ($)", min_value=0.0, step=10.0, value=None, placeholder="0.00") # 不需要动态Key了，form会自动处理
+                reason = ""
+                
+                # 只有当外面的开关选择了 Yes，表单里面才显示这些勾选框
+                # 因为在Form里，这些显示是静态的，不会因为点击而跳动
+                if is_lancome == "Yes\n是":
+                    st.caption("Lancôme Categories (兰蔻分类)")
+                    lc1, lc2, lc3 = st.columns(3)
+                    with lc1:
+                        if st.checkbox("💄 Makeup\n彩妆"): lancome_cats_selected.append("Makeup")
+                    with lc2:
+                        if st.checkbox("🧴 Skincare\n护肤"): lancome_cats_selected.append("Skincare")
+                    with lc3:
+                        if st.checkbox("🌸 Fragrance\n香水"): lancome_cats_selected.append("Fragrance")
+                
             else:
                 amount = 0.0
                 reason = st.radio("Reason", 
                     ["👀 Just Looking\n闲逛", "💰 Price\n太贵", "💄 Competitor\n竞品", "📦 Out of Stock\n缺货", "❓ Other\n其他"], 
                     horizontal=True,
-                    index=None # 不预选
+                    index=None
                 )
             
             st.divider()
-            st.caption("👤 Customer Profile (顾客画像)")
             
-            # 年龄 / 性别 / 类型 / 种族 -> 全都不预选 (index=None)
-            # 文本格式：Emoji English \n Chinese
+            # --- B. 顾客画像 ---
+            st.caption("👤 Customer Profile (顾客画像)")
+            # 这里的所有点击现在都不会导致页面刷新了！
             age = st.radio("Age", ["🐣 Youth\n青年", "👩 Mid-aged\n中年", "👵 Senior\n老年"], horizontal=True, index=None)
             st.write("") 
             
@@ -257,39 +300,50 @@ with tab1:
             st.write("")
             race = st.radio("Race", ["⚪ White\n白人", "🐼 Chinese\n华人", "🌏 Asian\n亚裔", "🦅 Other US\n美国其他族裔", "🌍 Others\n其他"], horizontal=True, index=None)
             
-            st.divider()
-            st.caption("🤝 Interaction (交互过程)")
-
-            intent = st.radio("Intent", 
-                ["👀 Browsing\n闲逛", "🎯 Target\n明确目标", "🎁 Pickup/Gift\n取货/礼物", "🔄 Return\n退换货"], 
-                horizontal=True,
-                index=None
-            )
-            st.write("")
             
-            st.caption("Promo Method (可多选)")
-            # 促单方式：手动布局多选框
-            promo_selected = []
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                if st.checkbox("🗣️ Service\n专业推荐"): promo_selected.append("Service")
-            with c2:
-                if st.checkbox("🎁 GWP\n赠品/小样"): promo_selected.append("GWP")
-            with c3:
-                if st.checkbox("📉 Match\n比价/PM"): promo_selected.append("Price Match")
+            # --- C. 交互过程 (仅 Bought 显示) ---
+            if "Bought" in outcome_mode:
+                st.divider()
+                st.caption("🤝 Interaction (交互过程)")
+
+                intent = st.radio("Intent", 
+                    ["👀 Browsing\n闲逛", "🎯 Target\n明确目标", "🎁 Pickup/Gift\n取货/礼物", "🔄 Return\n退换货"], 
+                    horizontal=True,
+                    index=None
+                )
+                st.write("")
                 
-            c4, c5, c6 = st.columns(3)
-            with c4:
-                if st.checkbox("🛒 Grab&Go\n自助/无"): promo_selected.append("Grab & Go")
-            with c5:
-                if st.checkbox("📅 Event\n商场活动"): promo_selected.append("Event")
-            with c6:
-                st.empty() 
+                st.caption("Promo Method (可多选)")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if st.checkbox("🗣️ Service\n专业推荐"): promo_selected.append("Service")
+                with c2:
+                    if st.checkbox("🎁 GWP\n赠品/小样"): promo_selected.append("GWP")
+                with c3:
+                    if st.checkbox("📉 Match\n比价/PM"): promo_selected.append("Price Match")
+                
+                c4, c5, c6 = st.columns(3)
+                with c4:
+                    if st.checkbox("🛒 Grab&Go\n自助/无"): promo_selected.append("Grab & Go")
+                with c5:
+                    if st.checkbox("📅 Event\n商场活动"): promo_selected.append("Event")
+                with c6:
+                    st.empty() 
 
+                st.write("")
+                
+                contact = st.radio("Contact", 
+                    ["🆕 New\n新抓取", "📂 Existing\n已有", "❌ No\n未留"], 
+                    horizontal=True,
+                    index=None
+                )
+
+            # --- D. 服务时长 ---
             st.write("")
-
-            contact = st.radio("Contact", 
-                ["🆕 New\n新抓取", "📂 Existing\n已有", "❌ No\n未留"], 
+            st.divider() 
+            st.caption("⏱️ Efficiency (服务时长)")
+            duration = st.radio("Service Duration", 
+                ["⚡ < 5 min\n小于5分钟", "🕒 5-15 min\n5-15分钟", "⏳ 15-30 min\n15-30分钟", "🐢 > 30 min\n超长服务"],
                 horizontal=True,
                 index=None
             )
@@ -299,11 +353,12 @@ with tab1:
             
             submit_label = "🚀 Submit (提交)" if "Bought" in outcome_mode else "📝 Record (记录)"
             
-            if st.form_submit_button(submit_label, use_container_width=True):
+            # 这个按钮现在是 Form 的提交按钮
+            submitted = st.form_submit_button(submit_label, use_container_width=True)
+            
+            if submitted:
                 current_time_str = get_seattle_time().strftime("%Y-%m-%d %H:%M:%S")
-                final_amount = amount if amount is not None else 0.0
-                
-                # 如果没选促单方式，默认给一个 "None"
+                final_amount = amount if (amount is not None and "Bought" in outcome_mode) else 0.0
                 final_promo = promo_selected if promo_selected else ["None"]
                 
                 new_entry = {
@@ -313,11 +368,17 @@ with tab1:
                     "Amount": final_amount, "Reason": reason,
                     "Type": customer_type,
                     "Promo": final_promo, 
-                    "Contact": contact
+                    "Contact": contact,
+                    "Is_Lancome": is_lancome,
+                    "Lancome_Cats": lancome_cats_selected,
+                    "Duration": duration
                 }
                 save_data(new_entry)
                 st.toast("✅ Saved!")
                 time.sleep(0.5)
+                
+                # 🔥 关键：增加Key值，强制整个页面（包括表单外和表单内）全部重置
+                st.session_state.entry_key += 1
                 st.rerun()
 
 # ====================
